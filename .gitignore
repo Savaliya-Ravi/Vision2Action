@@ -1,0 +1,49 @@
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment and secrets
+.env
+.env.*
+secrets.json
+credentials.json
+
+# Packaging and build
+build/
+dist/
+*.egg-info/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# MuJoCo local assets
+mujoco_key.txt
+.mujoco/
+
+# Local runtime files
+*.sqlite3
