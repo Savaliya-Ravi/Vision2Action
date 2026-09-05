@@ -33,7 +33,7 @@ def apply_robot_state(
     model: mujoco.MjModel,
     data: mujoco.MjData,
     state: RobotState,
-    robot_height: float = 0.6,
+    robot_height: float = 0.793,
 ) -> None:
     joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "robot_free")
     qpos_adr = model.jnt_qposadr[joint_id]
@@ -56,6 +56,15 @@ def move_forward(state: RobotState, forward_step: float = 0.005) -> None:
     state.y += forward_step * math.sin(state.yaw)
     state.x = float(np.clip(state.x, -3.7, 3.7))
     state.y = float(np.clip(state.y, -3.7, 3.7))
+
+
+def distance_to_world_target(state: RobotState, target_xy: np.ndarray) -> float:
+    """Return planar distance to a target position estimated from perception."""
+    target_xy = np.asarray(target_xy, dtype=float)
+    if target_xy.shape != (2,) or not np.all(np.isfinite(target_xy)):
+        return float("nan")
+    robot_xy = np.array([state.x, state.y], dtype=float)
+    return float(np.linalg.norm(target_xy - robot_xy))
 
 
 def robot_to_target_distance(model: mujoco.MjModel, data: mujoco.MjData, target_body_name: str) -> float:

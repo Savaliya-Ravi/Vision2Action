@@ -1,0 +1,205 @@
+<mujoco model="vision2action_kitchen_v3">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.02" gravity="0 0 -9.81"/>
+  <include file="../assets/robots/unitree_g1/g1_with_hands.xml"/>
+
+  <visual>
+    <global offwidth="1280" offheight="960"/>
+    <map znear="0.01" zfar="30"/>
+    <headlight ambient="0.45 0.45 0.45" diffuse="0.45 0.45 0.45" specular="0.15 0.15 0.15"/>
+    <quality shadowsize="2048"/>
+  </visual>
+
+  <asset>
+    <!-- floor + generic surfaces -->
+    <texture name="tex_grid" type="2d" builtin="checker" rgb1="0.82 0.82 0.84" rgb2="0.72 0.72 0.75" width="512" height="512"/>
+    <material name="mat_floor" texture="tex_grid" texrepeat="10 10" reflectance="0.0"/>
+    <material name="mat_wall" rgba="0.93 0.93 0.95 1"/>
+
+    <!-- generated procedural textures -->
+    <texture name="tex_steel" type="2d" file="../assets/generated/steel.png"/>
+    <texture name="tex_enamel" type="2d" file="../assets/generated/enamel.png"/>
+    <texture name="tex_wood" type="2d" file="../assets/generated/wood.png"/>
+    <texture name="tex_counter" type="2d" file="../assets/generated/counter.png"/>
+    <texture name="tex_glass" type="2d" file="../assets/generated/darkglass.png"/>
+    <texture name="tex_tile" type="2d" file="../assets/generated/tile.png"/>
+    <material name="mat_steel" texture="tex_steel" texuniform="true" texrepeat="1 1" specular="0.6" shininess="0.4" reflectance="0.15"/>
+    <material name="mat_enamel" texture="tex_enamel" texuniform="true" specular="0.3" shininess="0.3"/>
+    <material name="mat_wood" texture="tex_wood" texuniform="true" texrepeat="2 2"/>
+    <material name="mat_counter" texture="tex_counter" texuniform="true" texrepeat="2 1"/>
+    <material name="mat_glass" texture="tex_glass" texuniform="true" specular="0.8" shininess="0.8"/>
+    <material name="mat_tile" texture="tex_tile" texuniform="true" texrepeat="3 2"/>
+    <material name="mat_banana" rgba="0.94 0.83 0.16 1" specular="0.2" shininess="0.2"/>
+
+    <!-- generated red soda can -->
+    <mesh name="soda_can" file="../assets/generated/soda_can.obj"/>
+    <texture name="tex_can_red" type="2d" file="../assets/generated/can_red.png"/>
+    <material name="mat_can_red" texture="tex_can_red"/>
+
+    <!-- YCB meshes (existing) -->
+    <mesh name="ycb_bottle_visual" file="../assets/ycb/mustard_bottle/textured.obj" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_bottle_collision_0" file="../assets/ycb/mustard_bottle/textured_coacd_0.stl" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_bottle_collision_1" file="../assets/ycb/mustard_bottle/textured_coacd_1.stl" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_bottle_collision_2" file="../assets/ycb/mustard_bottle/textured_coacd_2.stl" scale="1.5 1.5 1.5"/>
+    <texture name="ycb_bottle_texture" type="2d" file="../assets/ycb/mustard_bottle/texture_map.png"/>
+    <material name="ycb_bottle_material" texture="ycb_bottle_texture"/>
+
+    <mesh name="ycb_mug_visual" file="../assets/ycb/mug/textured.obj" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_mug_collision_0" file="../assets/ycb/mug/textured_coacd_0.stl" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_mug_collision_1" file="../assets/ycb/mug/textured_coacd_1.stl" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_mug_collision_2" file="../assets/ycb/mug/textured_coacd_2.stl" scale="1.5 1.5 1.5"/>
+    <texture name="ycb_mug_texture" type="2d" file="../assets/ycb/mug/texture_map.png"/>
+    <material name="ycb_mug_material" texture="ycb_mug_texture"/>
+
+    <mesh name="ycb_can_visual" file="../assets/ycb/master_chef_can/textured.obj" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_can_collision_0" file="../assets/ycb/master_chef_can/textured_coacd_0.stl" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_can_collision_1" file="../assets/ycb/master_chef_can/textured_coacd_1.stl" scale="1.5 1.5 1.5"/>
+    <mesh name="ycb_can_collision_2" file="../assets/ycb/master_chef_can/textured_coacd_2.stl" scale="1.5 1.5 1.5"/>
+    <texture name="ycb_can_texture" type="2d" file="../assets/ycb/master_chef_can/texture_map.png"/>
+    <material name="ycb_can_material" texture="ycb_can_texture"/>
+  </asset>
+
+  <worldbody>
+    <light name="ceiling" pos="0 0 3.9" dir="0 0 -1" directional="true" diffuse="0.5 0.5 0.5" specular="0.05 0.05 0.05" castshadow="true"/>
+    <light name="fill_ne" pos="3 3 3.6" dir="-0.6 -0.6 -1" directional="false" diffuse="0.28 0.28 0.28" specular="0.03 0.03 0.03"/>
+    <light name="fill_sw" pos="-3 -3 3.6" dir="0.6 0.6 -1" directional="false" diffuse="0.24 0.24 0.24" specular="0.03 0.03 0.03"/>
+
+    <geom name="floor" type="plane" pos="0 0 0" size="4 4 0.1" material="mat_floor"/>
+    <geom name="wall_north" type="box" pos="0 3.95 1.25" size="4 0.05 1.25" material="mat_wall"/>
+    <geom name="wall_south" type="box" pos="0 -3.95 1.25" size="4 0.05 1.25" material="mat_wall"/>
+    <geom name="wall_east" type="box" pos="3.95 0 1.25" size="0.05 4 1.25" material="mat_wall"/>
+    <geom name="wall_west" type="box" pos="-3.95 0 1.25" size="0.05 4 1.25" material="mat_wall"/>
+    <geom name="backsplash" type="box" pos="0.6 3.88 1.35" size="1.7 0.02 0.45" material="mat_tile"/>
+
+    <!-- ===================== FIXED APPLIANCES (ground truth = body xpos) ===================== -->
+    <!-- Kitchen counter along the north wall -->
+    <body name="counter" pos="0.6 3.35 0">
+      <geom name="counter_cabinet" type="box" pos="0 0 0.44" size="1.6 0.34 0.44" material="mat_wood"/>
+      <geom name="counter_top" type="box" pos="0 0 0.905" size="1.65 0.38 0.03" material="mat_counter"/>
+    </body>
+
+    <!-- Sink set into the counter -->
+    <body name="sink" pos="1.05 3.35 0.955">
+      <geom name="sink_frame" type="box" pos="0 0 0.01" size="0.32 0.25 0.02" material="mat_steel"/>
+      <geom name="sink_basin" type="box" pos="0 0 0.03" size="0.25 0.19 0.05" material="mat_glass"/>
+      <geom name="faucet_stem" type="cylinder" pos="0 0.19 0.12" size="0.018 0.11" material="mat_steel"/>
+      <geom name="faucet_spout" type="box" pos="0 0.12 0.22" size="0.018 0.09 0.018" material="mat_steel"/>
+    </body>
+
+    <!-- Microwave on the counter -->
+    <body name="microwave" pos="-0.35 3.3 0.935">
+      <geom name="mw_body" type="box" pos="0 0 0.16" size="0.27 0.21 0.16" material="mat_steel"/>
+      <geom name="mw_door" type="box" pos="0 -0.212 0.16" size="0.18 0.005 0.12" material="mat_glass"/>
+      <geom name="mw_panel" type="box" pos="0.21 -0.212 0.16" size="0.05 0.005 0.12" material="mat_steel"/>
+      <geom name="mw_handle" type="box" pos="-0.19 -0.22 0.16" size="0.015 0.008 0.1" material="mat_steel"/>
+    </body>
+
+    <!-- Coffee machine on the counter -->
+    <body name="coffee_machine" pos="1.95 3.32 0.935">
+      <geom name="cm_base" type="box" pos="0 0 0.11" size="0.12 0.12 0.11" material="mat_steel"/>
+      <geom name="cm_top" type="box" pos="0 -0.02 0.25" size="0.12 0.10 0.03" material="mat_glass"/>
+      <geom name="cm_group" type="cylinder" pos="0 -0.12 0.13" size="0.028 0.04" euler="1.5708 0 0" material="mat_steel"/>
+    </body>
+
+    <!-- Refrigerator in the NW corner -->
+    <body name="fridge_carcass" pos="-3.25 2.9 0">
+      <geom name="fridge_body" type="box" pos="0 0 0.92" size="0.42 0.4 0.92"
+            material="mat_steel" contype="0" conaffinity="0"/>
+      <geom name="fridge_back" type="box" pos="0 0.38 0.92" size="0.42 0.02 0.92" material="mat_steel"/>
+      <geom name="fridge_left" type="box" pos="-0.40 0 0.92" size="0.02 0.38 0.92" material="mat_steel"/>
+      <geom name="fridge_right" type="box" pos="0.40 0 0.92" size="0.02 0.38 0.92" material="mat_steel"/>
+      <geom name="fridge_top" type="box" pos="0 0 1.82" size="0.40 0.38 0.02" material="mat_steel"/>
+      <geom name="fridge_bottom" type="box" pos="0 0 0.02" size="0.40 0.38 0.02" material="mat_steel"/>
+
+      <body name="fridge_door" pos="-0.42 -0.401 0">
+        <joint name="fridge_door_hinge" type="hinge" axis="0 0 -1" range="0 1.91986" damping="1"/>
+        <geom name="fridge_door_panel" type="box" pos="0.42 0 0.92" size="0.42 0.02 0.92" material="mat_steel"/>
+        <geom name="fridge_seam" type="box" pos="0.42 -0.021 0.92" size="0.42 0.004 0.008" material="mat_glass"/>
+        <geom name="fridge_handle_up" type="box" pos="0.77 -0.03 1.3" size="0.03 0.02 0.24" material="mat_glass"/>
+        <geom name="fridge_handle_dn" type="box" pos="0.77 -0.03 0.5" size="0.03 0.02 0.24" material="mat_glass"/>
+      </body>
+    </body>
+
+    <!-- Oven / stove against the west wall -->
+    <body name="oven" pos="-3.35 -0.2 0">
+      <geom name="oven_body" type="box" pos="0 0 0.44" size="0.36 0.36 0.44" material="mat_enamel"/>
+      <geom name="oven_door" type="box" pos="0.362 0 0.36" size="0.006 0.28 0.26" material="mat_glass"/>
+      <geom name="oven_handle" type="box" pos="0.4 0 0.62" size="0.02 0.28 0.02" material="mat_steel"/>
+      <geom name="burner_1" type="cylinder" pos="-0.14 -0.14 0.885" size="0.08 0.006" material="mat_glass"/>
+      <geom name="burner_2" type="cylinder" pos="0.14 -0.14 0.885" size="0.08 0.006" material="mat_glass"/>
+      <geom name="burner_3" type="cylinder" pos="-0.14 0.14 0.885" size="0.08 0.006" material="mat_glass"/>
+      <geom name="burner_4" type="cylinder" pos="0.14 0.14 0.885" size="0.08 0.006" material="mat_glass"/>
+    </body>
+
+    <!-- Dining table: kept in the south-east corner so it does not split the room. -->
+    <body name="table" pos="3.15 -3.35 0">
+      <geom name="table_top" type="box" pos="0 0 0.74" size="0.7 0.45 0.03" material="mat_wood"/>
+      <geom name="table_leg_1" type="box" pos="0.62 0.37 0.37" size="0.03 0.03 0.37" material="mat_wood"/>
+      <geom name="table_leg_2" type="box" pos="-0.62 0.37 0.37" size="0.03 0.03 0.37" material="mat_wood"/>
+      <geom name="table_leg_3" type="box" pos="0.62 -0.37 0.37" size="0.03 0.03 0.37" material="mat_wood"/>
+      <geom name="table_leg_4" type="box" pos="-0.62 -0.37 0.37" size="0.03 0.03 0.37" material="mat_wood"/>
+    </body>
+
+    <!-- Chair beside the corner table, clear of the robot-to-table sight line. -->
+    <body name="chair" pos="2.25 -3.45 0">
+      <geom name="chair_seat" type="box" pos="0 0 0.45" size="0.22 0.22 0.03" material="mat_wood"/>
+      <geom name="chair_back" type="box" pos="0 0.2 0.66" size="0.22 0.03 0.2" material="mat_wood"/>
+      <geom name="chair_leg_1" type="box" pos="0.19 0.19 0.225" size="0.025 0.025 0.225" material="mat_wood"/>
+      <geom name="chair_leg_2" type="box" pos="-0.19 0.19 0.225" size="0.025 0.025 0.225" material="mat_wood"/>
+      <geom name="chair_leg_3" type="box" pos="0.19 -0.19 0.225" size="0.025 0.025 0.225" material="mat_wood"/>
+      <geom name="chair_leg_4" type="box" pos="-0.19 -0.19 0.225" size="0.025 0.025 0.225" material="mat_wood"/>
+    </body>
+
+    <!-- Trash bin -->
+    <body name="trash_bin" pos="2.9 -1.2 0">
+      <geom name="trash_body" type="cylinder" pos="0 0 0.3" size="0.22 0.3" material="mat_steel"/>
+      <geom name="trash_lid" type="cylinder" pos="0 0 0.62" size="0.23 0.03"
+            material="mat_glass" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- ===================== MOVABLE OBJECTS (randomised, seeded) ===================== -->
+    <body name="target_bottle" pos="1.6 -1.0 0.30">
+      <freejoint name="target_bottle_free"/>
+      <inertial pos="0 0 0" mass="0.603" diaginertia="0.001 0.001 0.001"/>
+      <geom type="mesh" mesh="ycb_bottle_visual" material="ycb_bottle_material" contype="0" conaffinity="0"/>
+      <geom type="mesh" mesh="ycb_bottle_collision_0" group="3"/>
+      <geom type="mesh" mesh="ycb_bottle_collision_1" group="3"/>
+      <geom type="mesh" mesh="ycb_bottle_collision_2" group="3"/>
+    </body>
+
+    <body name="target_mug" pos="-1.6 -1.0 0.14">
+      <freejoint name="target_mug_free"/>
+      <inertial pos="0 0 0" mass="0.118" diaginertia="0.001 0.001 0.001"/>
+      <geom type="mesh" mesh="ycb_mug_visual" material="ycb_mug_material" contype="0" conaffinity="0"/>
+      <geom type="mesh" mesh="ycb_mug_collision_0" group="3"/>
+      <geom type="mesh" mesh="ycb_mug_collision_1" group="3"/>
+      <geom type="mesh" mesh="ycb_mug_collision_2" group="3"/>
+    </body>
+
+    <body name="target_can" pos="2.2 0.0 0.16">
+      <freejoint name="target_can_free"/>
+      <inertial pos="0 0 0" mass="0.414" diaginertia="0.001 0.001 0.001"/>
+      <geom type="mesh" mesh="ycb_can_visual" material="ycb_can_material" contype="0" conaffinity="0"/>
+      <geom type="mesh" mesh="ycb_can_collision_0" group="3"/>
+      <geom type="mesh" mesh="ycb_can_collision_1" group="3"/>
+      <geom type="mesh" mesh="ycb_can_collision_2" group="3"/>
+    </body>
+
+    <body name="target_can_red" pos="3.48 -3.50 0.795">
+      <freejoint name="target_can_red_free"/>
+      <inertial pos="0 0 0.0575" mass="0.35" diaginertia="0.001 0.001 0.001"/>
+      <geom type="mesh" mesh="soda_can" material="mat_can_red" contype="0" conaffinity="0"/>
+      <geom name="can_red_collision" type="cylinder" pos="0 0 0.0575" size="0.033 0.0575" group="3"/>
+    </body>
+
+    <body name="target_banana" pos="3.15 -3.35 0.795">
+      <freejoint name="target_banana_free"/>
+      <inertial pos="0 0 0" mass="0.12" diaginertia="0.0005 0.0005 0.0005"/>
+      <geom name="banana_1" type="ellipsoid" pos="-0.055 0.02 0" size="0.035 0.018 0.018" euler="0 0 0.38397" material="mat_banana"/>
+      <geom name="banana_2" type="ellipsoid" pos="0 0 0.003" size="0.052 0.021 0.021" material="mat_banana"/>
+      <geom name="banana_3" type="ellipsoid" pos="0.055 0.02 0" size="0.035 0.018 0.018" euler="0 0 -0.38397" material="mat_banana"/>
+    </body>
+
+    <camera name="user_cam" pos="4.6 -4.6 4.2" xyaxes="0.70 0.70 0 -0.40 0.40 0.82"/>
+  </worldbody>
+</mujoco>

@@ -1,3 +1,6 @@
-from vision2action.perception.color_detector import ColorDetector, Detector, detect_target_centroid
+from vision2action.perception.depth_utils import backproject_pixel_to_camera, camera_xyz_to_world
 
-__all__ = ["ColorDetector", "Detector", "detect_target_centroid"]
+__all__ = [
+	"backproject_pixel_to_camera",
+	"camera_xyz_to_world",
+]

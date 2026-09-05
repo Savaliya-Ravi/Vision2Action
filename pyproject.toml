@@ -3,15 +3,18 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Vision2Action"
-version = "1.0.0"
-description = "Vision to Language to Action robotics prototype built on MuJoCo"
+name = "HumanoidVision2Action"
+version = "2.1.0"
+description = "Language-directed humanoid navigation and manipulation in MuJoCo"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 dependencies = [
-  "mujoco>=3.1.0",
-  "numpy>=1.24",
+  "mujoco==3.7.0",
+  "numpy==2.4.4",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest==9.0.2"]
 
 [tool.setuptools]
 include-package-data = true
@@ -20,4 +23,17 @@ include-package-data = true
 include = ["vision2action*"]
 
 [tool.setuptools.package-data]
-vision2action = ["env/scene.xml"]
+vision2action = [
+  "env/*.xml",
+  "assets/**/*.xml",
+  "assets/**/*.STL",
+  "assets/**/*.obj",
+  "assets/**/*.stl",
+  "assets/**/*.mtl",
+  "assets/**/*.png",
+  "assets/**/LICENSE",
+  "assets/**/UPSTREAM_README.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

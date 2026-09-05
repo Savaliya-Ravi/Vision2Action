@@ -1,31 +1,48 @@
+"""Interactive Vision2Action demo: a thin viewer around the perception-driven
+navigation :class:`~vision2action.navigation.mission.Mission`.
+
+Responsibilities kept here are strictly orchestration:
+
+* build the scene and the oracle detector,
+* read typed commands on a background thread,
+* drive :class:`Mission.step` each tick and mirror the *perceived* target into
+  the 3D viewer as a marker plus an optional 2-D debug overlay window.
+
+All navigation logic and every threshold live in :class:`Mission` / :class:`Config`;
+nothing here touches ground truth.
+"""
+
 from __future__ import annotations
 
+import argparse
 import logging
+import os
+import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 import mujoco
 import mujoco.viewer
 import numpy as np
 
-from vision2action.control.controller import (
-    apply_robot_state,
-    camera_forward_distance,
-    initialize_robot_state,
-    move_forward,
-    robot_to_target_distance,
-    rotate_in_place,
-)
-from vision2action.navigation.navigation import NavParams, navigation_step
-from vision2action.perception.color_detector import ColorDetector
+from vision2action.config import Config
+from vision2action.control.controller import apply_robot_state, initialize_robot_state
+from vision2action.env.randomization import randomize_scene_objects
+from vision2action.manipulation import initialize_gripper, pick_up_red_can
+from vision2action.navigation.mission import Mission, Phase, StepResult
+from vision2action.perception.factory import build_detector
+from vision2action.perception.visualization import draw_overlay
+from vision2action.targets import SUPPORTED_CATEGORIES, parse_target_instruction
+from vision2action.world.world_model import WorldModel
 
+logger = logging.getLogger(__name__)
 
-def parse_instruction(instruction: str) -> str | None:
-    text = instruction.lower().strip()
-    for color in ["blue", "red", "green", "brown"]:
-        if color in text:
-            return color
-    return None
+_system_fonts = Path("/usr/share/fonts/truetype/dejavu")
+if _system_fonts.exists():
+    os.environ.setdefault("QT_QPA_FONTDIR", str(_system_fonts))
+
+_OVERLAY_WINDOW = "Vision2Action - robot camera"
 
 
 def set_user_free_camera(viewer: mujoco.viewer.Handle) -> None:
@@ -38,9 +55,10 @@ def set_user_free_camera(viewer: mujoco.viewer.Handle) -> None:
 
 
 def _command_reader(command_state: dict, lock: threading.Lock, running: threading.Event) -> None:
+    prompt = "\nCommand (e.g. 'go to the fridge', 'go to the red can', 'stop', 'quit'): "
     while running.is_set():
         try:
-            text = input("\nType command (e.g., 'go to green'), or 'stop': ").strip()
+            text = input(prompt).strip()
         except EOFError:
             break
         if not text:
@@ -49,268 +67,233 @@ def _command_reader(command_state: dict, lock: threading.Lock, running: threadin
             command_state["pending"] = text
 
 
-def run_demo() -> None:
+def _draw_markers(viewer: mujoco.viewer.Handle, world_model: WorldModel, active_label: Optional[str]) -> None:
+    """Show each remembered perceived position as a sphere (active = red)."""
+    viewer.user_scn.ngeom = 0
+    max_geoms = min(int(viewer.user_scn.maxgeom), len(viewer.user_scn.geoms))
+    for label, world_xy in world_model.get_all().items():
+        if viewer.user_scn.ngeom >= max_geoms or world_xy is None:
+            break
+        rgba = np.array([1, 0, 0, 1] if label == active_label else [0.6, 0.6, 0.6, 1], dtype=np.float32)
+        g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
+        mujoco.mjv_initGeom(
+            g, mujoco.mjtGeom.mjGEOM_SPHERE, np.zeros(3), np.zeros(3), np.eye(3).flatten(), rgba
+        )
+        g.size[:] = [0.08, 0.08, 0.08]
+        g.pos[:] = [float(world_xy[0]), float(world_xy[1]), 0.5]
+        viewer.user_scn.ngeom += 1
+
+
+def _has_display() -> bool:
+    """Whether a GUI window can really be opened.
+
+    OpenCV/Qt aborts the whole process (uncatchable) when it cannot reach an X
+    server, so a mere ``DISPLAY`` env var is not enough -- a stale ``:0`` with no
+    server behind it still crashes.  We actually probe the X11 socket and treat
+    *any* failure (including sandbox socket restrictions) as "no display".
+    """
+    if not sys.platform.startswith("linux"):
+        return True
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    disp = os.environ.get("DISPLAY", "")
+    if not disp:
+        return False
+    host, _, num = disp.partition(":")
+    if host not in ("", "unix"):
+        return True  # remote/TCP display; assume the user knows it works
+    import socket
+
+    dnum = num.split(".")[0] or "0"
+    path = f"/tmp/.X11-unix/X{dnum}"
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.3)
+        s.connect(path)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def _show_overlay(result: StepResult) -> bool:
+    """Render the debug overlay in an OpenCV window. Returns False to disable."""
+    if not _has_display():
+        return False  # headless: cv2.imshow would abort the process via Qt
+    try:
+        import cv2
+    except ImportError:
+        return False
+    frame = draw_overlay(
+        result.rgb,
+        result.detections,
+        result.selection,
+        distance_m=result.distance_m,
+        world_xy=result.target_xy,
+        phase=result.phase.value,
+    )
+    try:
+        cv2.imshow(_OVERLAY_WINDOW, frame[..., ::-1])  # RGB -> BGR for OpenCV
+        cv2.waitKey(1)
+        return True
+    except cv2.error:
+        return False  # no GUI backend; disable quietly
+
+
+def _handle_command(text: str, mission: Mission, world_model: WorldModel, action_state: dict) -> bool:
+    """Apply a typed command. Returns False if the demo should quit."""
+    low = text.lower().strip()
+    if low in ("quit", "exit"):
+        return False
+    if low == "stop":
+        mission.reset()
+        mission.config.nav.stop_distance_m = action_state["normal_stop"]
+        action_state["pick_up"] = False
+        action_state["target_xy"] = None
+        world_model.clear()
+        logger.info("Stopped; idle.")
+        return True
+
+    query = parse_target_instruction(text)
+    if query is None:
+        logger.info("Unsupported target. Try one of: %s", ", ".join(SUPPORTED_CATEGORIES))
+        return True
+    wants_pickup = "pick up" in low or "pickup" in low or "grab" in low
+    if wants_pickup and not (query.category == "can" and query.color == "red"):
+        logger.info("V2 pickup currently supports only the red can.")
+        return True
+
+    world_model.clear()
+    action_state["pick_up"] = wants_pickup
+    action_state["target_xy"] = None
+    mission.config.nav.stop_distance_m = action_state["normal_stop"]
+    mission.start(query)
+    if query.supported_by_pretrained:
+        note = ""
+    elif mission.detector.name == "OracleDetector(omniscient)":
+        note = " (using oracle scene identity)"
+    else:
+        note = " (no COCO class; using colour fallback)"
+    action = "Picking up" if wants_pickup else "Going to"
+    logger.info("%s %s%s. Searching.", action, query.label, note)
+    return True
+
+
+def run_demo(
+    seed: Optional[int] = None,
+    backend: str = "oracle",
+    show_overlay: bool = False,
+    stop_distance_m: Optional[float] = None,
+) -> None:
     package_dir = Path(__file__).resolve().parent
     xml_path = package_dir / "env" / "scene.xml"
+
+    cfg = Config(seed=seed)
+    cfg.detector.backend = backend
+    if stop_distance_m is not None:
+        cfg.nav.stop_distance_m = stop_distance_m
 
     model = mujoco.MjModel.from_xml_path(str(xml_path))
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
+    placements = randomize_scene_objects(model, data, seed=seed)
+    initialize_gripper(model, data)
 
     robot_state = initialize_robot_state(model, data)
-    apply_robot_state(model, data, robot_state)
-    params = NavParams(search_yaw_step=0.001, centering_yaw_step=0.0008)
-    detector = ColorDetector()
+    apply_robot_state(model, data, robot_state)  # pin robot at mount height
 
-    image_h, image_w = 240, 320
-    max_search_steps = 5000
-    desired_clearance_m = 0.3
-    center_contact_distance_m = 0.30
-    stop_distance_m = desired_clearance_m + center_contact_distance_m
-    stop_distance_epsilon_m = 0.005
-    forward_step_m = 0.0009
-    min_forward_step_m = 1e-6
-    forward_step_safety_factor = 2.5
-    forward_step_margin = 200
-    drift_realign_threshold_m = 0.01
-    full_frame_mask_threshold = 0.20
-    centroid_hold_steps = 20
-    forward_correction_interval = 6
-    forward_center_tolerance_px = 14
+    detector = build_detector(
+        cfg.detector,
+        model=model,
+        data=data,
+        width=cfg.camera.width,
+        height=cfg.camera.height,
+        fovy_deg=cfg.camera.fovy_deg,
+        cam_local_offset=cfg.camera.local_offset,
+    )
+    mission = Mission(model=model, data=data, detector=detector, config=cfg)
+    world_model = WorldModel()
+    action_state = {
+        "pick_up": False,
+        "target_xy": None,
+        "normal_stop": cfg.nav.stop_distance_m,
+    }
 
-    renderer = mujoco.Renderer(model, height=image_h, width=image_w)
-
-    command_state = {"pending": None}
+    command_state: dict = {"pending": None}
     lock = threading.Lock()
     running = threading.Event()
     running.set()
-    reader_thread = threading.Thread(
-        target=_command_reader,
-        args=(command_state, lock, running),
-        daemon=True,
-    )
+    reader = threading.Thread(target=_command_reader, args=(command_state, lock, running), daemon=True)
 
+    overlay_on = show_overlay
     with mujoco.viewer.launch_passive(model, data) as viewer:
         set_user_free_camera(viewer)
-        logger = logging.getLogger(__name__)
-        logger.info("Viewer started; use terminal to send commands (e.g., 'go to green').")
-        logger.info("Robot will center the color then move toward it and stop near the door.")
-        reader_thread.start()
-
-        active_target = None
-        active_phase = None
-        command_step = 0
-        forward_step_limit = 0
-        best_forward_distance_m = float("inf")
-        last_seen_centroid = None
-        centroid_lost_steps = 0
-
+        logger.info("Detector=%s seed=%s stop=%.2fm", detector.name, seed, cfg.nav.stop_distance_m)
+        logger.info("Layout: %s", {k: tuple(round(v, 2) for v in xyz) for k, xyz in placements.items()})
+        reader.start()
         viewer.sync()
 
         try:
             while viewer.is_running():
-                pending = None
                 with lock:
-                    if command_state["pending"] is not None:
-                        pending = command_state["pending"]
-                        command_state["pending"] = None
+                    pending, command_state["pending"] = command_state["pending"], None
+                if pending is not None and not _handle_command(pending, mission, world_model, action_state):
+                    break
 
-                if pending is not None:
-                    if pending.lower().strip() == "stop":
-                        active_target = None
-                        active_phase = None
-                        best_forward_distance_m = float("inf")
-                        last_seen_centroid = None
-                        centroid_lost_steps = 0
-                        logger.info("Active command stopped.")
-                    else:
-                        parsed = parse_instruction(pending)
-                        if parsed is None:
-                            logger.info("Unsupported instruction. Use blue/red/green/brown.")
+                if mission.active:
+                    result = mission.step(robot_state)
+                    if result.target_xy is not None:
+                        world_model.update(mission.query.label, result.target_xy)
+                        action_state["target_xy"] = result.target_xy.copy()
+                    if result.phase in (Phase.DONE, Phase.FAILED):
+                        logger.info("%s: %s", result.phase.value.upper(), result.message)
+                    if result.phase == Phase.DONE and action_state["pick_up"]:
+                        target_xy = action_state["target_xy"]
+                        action_state["pick_up"] = False
+                        if target_xy is None:
+                            logger.info("PICKUP FAILED: no camera position available")
                         else:
-                            active_target = parsed
-                            active_phase = "search"
-                            command_step = 0
-                            best_forward_distance_m = float("inf")
-                            last_seen_centroid = None
-                            centroid_lost_steps = 0
-                            logger.info(f"Target parsed: {active_target}. Searching and aligning.")
+                            logger.info("Red can reached; moving the arm to the camera position.")
+                            picked = pick_up_red_can(model, data, viewer, target_xy, robot_state)
+                            logger.info("PICKUP %s", "DONE" if picked else "FAILED: arm could not reach the can")
+                        mission.config.nav.stop_distance_m = action_state["normal_stop"]
+                    if overlay_on:
+                        overlay_on = _show_overlay(result)
 
-                if active_target is not None:
-                    if active_phase == "search":
-                        center_distance_now_m = robot_to_target_distance(
-                            model, data, target_body_name=active_target
-                        )
-                        if center_distance_now_m <= stop_distance_m + stop_distance_epsilon_m:
-                            logger.info(f"Already near {active_target}. Current dist={center_distance_now_m:.3f}m")
-                            active_target = None
-                            active_phase = None
-                            best_forward_distance_m = float("inf")
-                            last_seen_centroid = None
-                            centroid_lost_steps = 0
-                            continue
-
-                        renderer.update_scene(data, camera="robot_cam")
-                        rgb = renderer.render()
-                        mask_uint8, centroid = detector.detect(rgb, target=active_target)
-                        total_pixels = image_w * image_h
-                        matched = int(mask_uint8.sum() // 255)
-                        matched_frac = matched / float(max(total_pixels, 1))
-
-                        if centroid is not None:
-                            last_seen_centroid = centroid
-                            centroid_lost_steps = 0
-
-                        if centroid is None:
-                            if matched_frac > full_frame_mask_threshold:
-                                centroid = (image_w // 2, image_h // 2)
-                                last_seen_centroid = centroid
-                                centroid_lost_steps = 0
-                                if command_step % 60 == 0:
-                                    logger.debug(
-                                        f"full-frame {active_target} mask (frac={matched_frac:.2f}), using image center"
-                                    )
-                            elif last_seen_centroid is not None and centroid_lost_steps < centroid_hold_steps:
-                                centroid = last_seen_centroid
-                                centroid_lost_steps += 1
-                            else:
-                                centroid_lost_steps += 1
-
-                        target_centered = navigation_step(
-                            state=robot_state,
-                            detection=centroid,
-                            image_width=image_w,
-                            params=params,
-                        )
-                        apply_robot_state(model, data, robot_state)
-
-                        if command_step % 60 == 0:
-                            seen = "yes" if centroid is not None else "no"
-                            logger.debug(f"search target={active_target} step={command_step:04d} seen={seen}")
-
-                        if target_centered:
-                            distance_m = camera_forward_distance(
-                                model, data, robot_state, target_body_name=active_target
-                            )
-                            if distance_m <= stop_distance_m + stop_distance_epsilon_m:
-                                logger.info(f"Already near {active_target}. Current dist={distance_m:.3f}m")
-                                active_target = None
-                                active_phase = None
-                                best_forward_distance_m = float("inf")
-                                last_seen_centroid = None
-                                centroid_lost_steps = 0
-                            else:
-                                remaining_m = max(distance_m - (stop_distance_m + stop_distance_epsilon_m), 0.0)
-                                estimated_steps = int(np.ceil(remaining_m / max(forward_step_m, 1e-9)))
-                                forward_step_limit = int(estimated_steps * forward_step_safety_factor) + forward_step_margin
-                                active_phase = "forward"
-                                command_step = 0
-                                best_forward_distance_m = distance_m
-                                last_seen_centroid = None
-                                centroid_lost_steps = 0
-                                logger.info(
-                                    f"Target {active_target} centered. Moving forward. "
-                                    f"dist={distance_m:.3f}m step_limit={forward_step_limit}"
-                                )
-                        elif command_step > max_search_steps:
-                            logger.info(f"Search timeout for target={active_target}.")
-                            active_target = None
-                            active_phase = None
-                            best_forward_distance_m = float("inf")
-                            last_seen_centroid = None
-                            centroid_lost_steps = 0
-                        else:
-                            command_step += 1
-
-                    elif active_phase == "forward":
-                        distance_before_m = camera_forward_distance(
-                            model, data, robot_state, target_body_name=active_target
-                        )
-                        if distance_before_m <= stop_distance_m + stop_distance_epsilon_m:
-                            logger.info(f"Reached {active_target}. Stopped at {distance_before_m:.3f}m.")
-                            active_target = None
-                            active_phase = None
-                            best_forward_distance_m = float("inf")
-                            last_seen_centroid = None
-                            centroid_lost_steps = 0
-                        else:
-                            step_m = min(
-                                forward_step_m,
-                                max(distance_before_m - (stop_distance_m + stop_distance_epsilon_m), 0.0),
-                            )
-                            if step_m <= min_forward_step_m:
-                                logger.info(
-                                    f"Reached {active_target}. Stopped at {distance_before_m:.3f}m (epsilon clamp)."
-                                )
-                                active_target = None
-                                active_phase = None
-                                best_forward_distance_m = float("inf")
-                                last_seen_centroid = None
-                                centroid_lost_steps = 0
-                                continue
-                            move_forward(robot_state, forward_step=step_m)
-                            apply_robot_state(model, data, robot_state)
-
-                            if command_step % forward_correction_interval == 0:
-                                renderer.update_scene(data, camera="robot_cam")
-                                rgb_corr = renderer.render()
-                                _, corr_centroid = detector.detect(rgb_corr, target=active_target)
-                                if corr_centroid is not None:
-                                    cx, _ = corr_centroid
-                                    center_x = image_w // 2
-                                    error_px = cx - center_x
-                                    if abs(error_px) > forward_center_tolerance_px:
-                                        normalized = error_px / float(max(center_x, 1))
-                                        yaw_delta = -float(np.clip(normalized, -1.0, 1.0)) * params.centering_yaw_step * 1.5
-                                        rotate_in_place(robot_state, yaw_step=yaw_delta)
-                                        apply_robot_state(model, data, robot_state)
-
-                            distance_m = camera_forward_distance(
-                                model, data, robot_state, target_body_name=active_target
-                            )
-
-                            if command_step % 60 == 0:
-                                logger.debug(
-                                    f"forward target={active_target} step={command_step:04d} dist={distance_m:.3f}m"
-                                )
-
-                            if distance_m <= stop_distance_m + stop_distance_epsilon_m:
-                                logger.info(f"Reached {active_target}. Stopped at {distance_m:.3f}m.")
-                                active_target = None
-                                active_phase = None
-                                best_forward_distance_m = float("inf")
-                                last_seen_centroid = None
-                                centroid_lost_steps = 0
-                            elif distance_m > best_forward_distance_m + drift_realign_threshold_m:
-                                logger.info(
-                                    f"Drift detected for target={active_target}. "
-                                    f"best={best_forward_distance_m:.3f}m now={distance_m:.3f}m -> re-aligning."
-                                )
-                                active_phase = "search"
-                                command_step = 0
-                                last_seen_centroid = None
-                                centroid_lost_steps = 0
-                            elif command_step > forward_step_limit:
-                                logger.info(
-                                    f"Forward timeout for target={active_target}. "
-                                    f"Last dist={distance_m:.3f}m step_limit={forward_step_limit}"
-                                )
-                                active_target = None
-                                active_phase = None
-                                best_forward_distance_m = float("inf")
-                                last_seen_centroid = None
-                                centroid_lost_steps = 0
-                            else:
-                                best_forward_distance_m = min(best_forward_distance_m, distance_m)
-                                command_step += 1
-
-                mujoco.mj_step(model, data)
+                _draw_markers(viewer, world_model, mission.query.label if mission.query else None)
                 viewer.sync()
+                if not mission.active:
+                    running.wait(0.01)
         finally:
             running.clear()
-            renderer.close()
+            mission.close()
+            if overlay_on:
+                try:
+                    import cv2
+
+                    cv2.destroyAllWindows()
+                except Exception:  # noqa: BLE001 - cleanup must never raise
+                    pass
+
+
+def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Vision2Action interactive demo")
+    p.add_argument("--seed", type=int, default=None, help="reproducible object placement seed")
+    p.add_argument("--backend", choices=("oracle",), default="oracle",
+                   help="oracle ground-truth projection backend")
+    p.add_argument("--stop-distance", type=float, default=None,
+                   help="override stop distance in metres (default from config, ~0.85)")
+    p.add_argument("--overlay", action="store_true", help="show the robot-camera debug window")
+    p.add_argument("--log", default="INFO", help="logging level (DEBUG/INFO/WARNING)")
+    return p.parse_args(argv)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    run_demo()
+    args = _parse_args()
+    logging.basicConfig(level=args.log.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    run_demo(
+        seed=args.seed,
+        backend=args.backend,
+        show_overlay=args.overlay,
+        stop_distance_m=args.stop_distance,
+    )
