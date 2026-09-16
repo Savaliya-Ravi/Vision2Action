@@ -23,5 +23,7 @@ JAX_PLATFORMS=cpu .venv-octo/bin/python scripts/test_octo_inference.py
 
 The downloaded checkpoint and the isolated environment are ignored by Git.
 
-Octo is not connected to the Unitree G1 controller. Its raw seven-value action
-format must be mapped and normalized before it can safely command this robot.
+V3 connects Octo to the Unitree G1 in a separate fridge-door trial. Its seven
+action values are converted to bounded right-hand motion and finger targets;
+the floating base is held at the fixed starting pose. See README.md for the
+command and the limits of this zero-shot trial.

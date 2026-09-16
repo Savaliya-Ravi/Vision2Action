@@ -365,6 +365,8 @@
                           <geom pos="0.0415 -0.003 0" quat="1 0 0 0" class="collision" mesh="right_hand_palm_link"/>
                           <site name="right_grasp_site" pos="0.14 0 0" size="0.008" rgba="0 1 0 0"/>
                           <camera name="wrist_cam" pos="0.10 0 0" quat="0.5 0.5 0.5 0.5" fovy="70"/>
+                          <camera name="vla_wrist_cam" pos="0.10 0 0"
+                            quat="0.594043 0.352835 -0.408855 -0.596204" fovy="90"/>
                           <body name="right_hand_thumb_0_link" pos="0.067 -0.003 0">
                             <inertial pos="-0.000884246 0.00863407 0.000944293"
                               quat="0.643965 0.462991 -0.398986 0.460173" mass="0.0862366"

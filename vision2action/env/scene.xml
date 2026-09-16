@@ -201,5 +201,8 @@
     </body>
 
     <camera name="user_cam" pos="4.6 -4.6 4.2" xyaxes="0.70 0.70 0 -0.40 0.40 0.82"/>
+    <!-- V3 policy view of the fridge workspace; existing detection camera is unchanged. -->
+    <camera name="vla_fridge_cam" pos="-1.9 1.35 1.7"
+            xyaxes="0.69437 0.71962 0 -0.27317 0.26358 0.92515" fovy="75"/>
   </worldbody>
 </mujoco>
