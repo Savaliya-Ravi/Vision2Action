@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.0
+
+- Kept the red can attached to the G1 hand during V2 navigation, including turns and approaches.
+- Retracted the right arm after pickup and after placement.
+- Added `put down the can` at a nearby clear table or counter spot and `put the can back` near its original table spot. Failed placements keep the can held.
+- Added a MuJoCo carry and placement regression test and validated the seed 1 pickup and sink navigation route.
+- Left V3 Octo arm control separate. Its seven-value action has no leg or base control; learned walking and reliable fridge opening remain V5 and V4 work, respectively.
+
 ## 3.0.0
 
 - Connected the existing Octo Small checkpoint to the Unitree G1 right arm and hand in a separate, closed-loop VLA trial.

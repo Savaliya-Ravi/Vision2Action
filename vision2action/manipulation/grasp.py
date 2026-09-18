@@ -108,7 +108,12 @@ def _attach_can(model, data):
     mujoco.mj_forward(model, data)
 
 
-def _move_base_closer(model, data, viewer, robot_state, perceived_xy):
+def sync_held_red_can(model, data):
+    """Keep the V2 assisted grasp aligned after the floating base moves."""
+    _attach_can(model, data)
+
+
+def _move_base_closer(model, data, viewer, robot_state, perceived_xy, held_can=False):
     target = np.asarray(perceived_xy, dtype=float)
     forward = np.array([math.cos(robot_state.yaw), math.sin(robot_state.yaw)])
     right = np.array([math.sin(robot_state.yaw), -math.cos(robot_state.yaw)])
@@ -122,6 +127,8 @@ def _move_base_closer(model, data, viewer, robot_state, perceived_xy):
         current += difference / distance * min(0.005, distance)
         robot_state.x, robot_state.y = current
         apply_robot_state(model, data, robot_state)
+        if held_can:
+            _attach_can(model, data)
         viewer.sync()
     return False
 
@@ -132,11 +139,92 @@ def _close_right_hand(model, data):
     mujoco.mj_forward(model, data)
 
 
-def pick_up_red_can(model, data, viewer, perceived_xy, robot_state):
+def _open_right_hand(model, data):
+    for name in RIGHT_HAND_JOINTS:
+        _set_joint(model, data, name, 0.0)
+    mujoco.mj_forward(model, data)
+
+
+def stow_right_arm(model, data, viewer, *, held_can=False, open_hand=False):
+    """Bring the V2 arm to its neutral pose, preserving an assisted grasp."""
+    targets = {name: ARM_HOME.get(name, 0.0) for name in RIGHT_ARM_JOINTS}
+    for _ in range(400):
+        remaining = 0.0
+        for name, target in targets.items():
+            joint = _id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            current = float(data.qpos[model.jnt_qposadr[joint]])
+            delta = float(np.clip(target - current, -0.015, 0.015))
+            remaining = max(remaining, abs(target - current))
+            _set_joint(model, data, name, current + delta)
+        mujoco.mj_forward(model, data)
+        if held_can:
+            _attach_can(model, data)
+        viewer.sync()
+        if remaining <= 0.015:
+            break
+    if open_hand:
+        _open_right_hand(model, data)
+        viewer.sync()
+
+
+def _placement_target(model, data, robot_state, home_pose, put_back):
+    home_pose = np.asarray(home_pose, dtype=float)
+    if home_pose.shape != (7,) or not np.all(np.isfinite(home_pose)):
+        raise ValueError("Expected the can's original seven-value free-joint pose")
+    table_xy = home_pose[:2]
+    table_z = float(home_pose[2])
+    counter_geom = _id(model, mujoco.mjtObj.mjOBJ_GEOM, "counter_top")
+    counter_center = data.geom_xpos[counter_geom][:2]
+    counter_z = float(data.geom_xpos[counter_geom][2] + model.geom_size[counter_geom][2])
+    choices = [("table", table_xy, table_z)]
+    if not put_back:
+        # These two clear areas flank the sink and appliances on the counter.
+        for offset_x in (-1.35, 0.95):
+            counter_xy = counter_center + np.array([offset_x, -0.27])
+            choices.append(("counter", counter_xy, counter_z))
+    robot_xy = np.array([robot_state.x, robot_state.y], dtype=float)
+    surface, xy, z = min(choices, key=lambda item: np.linalg.norm(item[1] - robot_xy))
+    if np.linalg.norm(xy - robot_xy) > 1.2:
+        return None
+    return surface, np.array([xy[0], xy[1], z + 0.0575]), z
+
+
+def put_down_red_can(model, data, viewer, robot_state, home_pose, *, put_back=False):
+    """Set the carried can on a nearby surface and retract the V2 arm.
+
+    Returns ``(surface_name, can_base_z)`` or ``None`` if no surface is in reach.
+    The assisted grasp remains active in the caller on failure.
+    """
+    placement = _placement_target(model, data, robot_state, home_pose, put_back)
+    if placement is None:
+        return None
+    surface, target, can_base_z = placement
+    if not _move_base_closer(model, data, viewer, robot_state, target[:2], held_can=True):
+        stow_right_arm(model, data, viewer, held_can=True)
+        return None
+    above = target + np.array([0.0, 0.0, 0.15])
+    if not _move_hand(model, data, viewer, above, held_can=True):
+        stow_right_arm(model, data, viewer, held_can=True)
+        return None
+    if not _move_hand(model, data, viewer, target, held_can=True):
+        stow_right_arm(model, data, viewer, held_can=True)
+        return None
+    _open_right_hand(model, data)
+    can_joint = _id(model, mujoco.mjtObj.mjOBJ_JOINT, "target_can_red_free")
+    can_qpos = int(model.jnt_qposadr[can_joint])
+    can_qvel = int(model.jnt_dofadr[can_joint])
+    data.qpos[can_qpos:can_qpos + 3] = [target[0], target[1], can_base_z]
+    data.qvel[can_qvel:can_qvel + 6] = 0.0
+    mujoco.mj_forward(model, data)
+    stow_right_arm(model, data, viewer, held_can=False)
+    return surface, can_base_z
+
+
+def pick_up_red_can(model, data, viewer, perceived_xy, robot_state, can_base_z=0.795):
     if not _move_base_closer(model, data, viewer, robot_state, perceived_xy):
         return False
 
-    center = np.array([perceived_xy[0], perceived_xy[1], 0.853])
+    center = np.array([perceived_xy[0], perceived_xy[1], can_base_z + 0.0575])
     above = center + np.array([0.0, 0.0, 0.18])
     if not _move_hand(model, data, viewer, above):
         return False
@@ -146,4 +234,7 @@ def pick_up_red_can(model, data, viewer, perceived_xy, robot_state):
     _close_right_hand(model, data)
     _attach_can(model, data)
     lift = center + np.array([0.0, 0.0, 0.25])
-    return _move_hand(model, data, viewer, lift, steps=800, held_can=True)
+    if not _move_hand(model, data, viewer, lift, steps=800, held_can=True):
+        return False
+    stow_right_arm(model, data, viewer, held_can=True)
+    return True

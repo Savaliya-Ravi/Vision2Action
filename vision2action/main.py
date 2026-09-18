@@ -1,15 +1,6 @@
-"""Interactive Vision2Action demo: a thin viewer around the perception-driven
-navigation :class:`~vision2action.navigation.mission.Mission`.
+"""Interactive V2 demo with oracle-assisted navigation and red-can handling.
 
-Responsibilities kept here are strictly orchestration:
-
-* build the scene and the oracle detector,
-* read typed commands on a background thread,
-* drive :class:`Mission.step` each tick and mirror the *perceived* target into
-  the 3D viewer as a marker plus an optional 2-D debug overlay window.
-
-All navigation logic and every threshold live in :class:`Mission` / :class:`Config`;
-nothing here touches ground truth.
+The V3 Octo arm trial is a separate entry point in :mod:`vision2action.vla`.
 """
 
 from __future__ import annotations
@@ -17,6 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -29,7 +21,13 @@ import numpy as np
 from vision2action.config import Config
 from vision2action.control.controller import apply_robot_state, initialize_robot_state
 from vision2action.env.randomization import randomize_scene_objects
-from vision2action.manipulation import initialize_gripper, pick_up_red_can
+from vision2action.manipulation import (
+    initialize_gripper,
+    pick_up_red_can,
+    put_down_red_can,
+    stow_right_arm,
+    sync_held_red_can,
+)
 from vision2action.navigation.mission import Mission, Phase, StepResult
 from vision2action.perception.factory import build_detector
 from vision2action.perception.visualization import draw_overlay
@@ -55,7 +53,7 @@ def set_user_free_camera(viewer: mujoco.viewer.Handle) -> None:
 
 
 def _command_reader(command_state: dict, lock: threading.Lock, running: threading.Event) -> None:
-    prompt = "\nCommand (e.g. 'go to the fridge', 'go to the red can', 'stop', 'quit'): "
+    prompt = "\nCommand (e.g. 'go to the fridge', 'pick up the red can', 'put down the can', 'stop', 'quit'): "
     while running.is_set():
         try:
             text = input(prompt).strip()
@@ -149,9 +147,23 @@ def _handle_command(text: str, mission: Mission, world_model: WorldModel, action
         mission.reset()
         mission.config.nav.stop_distance_m = action_state["normal_stop"]
         action_state["pick_up"] = False
+        action_state["put_down"] = None
         action_state["target_xy"] = None
         world_model.clear()
         logger.info("Stopped; idle.")
+        return True
+
+    words = set(re.findall(r"[a-z]+", low))
+    if "put" in words and words.intersection(("down", "back")) and words.intersection(("can", "it")):
+        if not action_state["held_can"]:
+            logger.info("The red can is not in the robot's hand.")
+            return True
+        mission.reset()
+        action_state["pick_up"] = False
+        action_state["put_down"] = "back" if "back" in words else "down"
+        action_state["target_xy"] = None
+        world_model.clear()
+        logger.info("Putting %s the red can.", "back" if action_state["put_down"] == "back" else "down")
         return True
 
     query = parse_target_instruction(text)
@@ -162,9 +174,13 @@ def _handle_command(text: str, mission: Mission, world_model: WorldModel, action
     if wants_pickup and not (query.category == "can" and query.color == "red"):
         logger.info("V2 pickup currently supports only the red can.")
         return True
+    if wants_pickup and action_state["held_can"]:
+        logger.info("Already holding the red can; put it down before picking it up again.")
+        return True
 
     world_model.clear()
     action_state["pick_up"] = wants_pickup
+    action_state["put_down"] = None
     action_state["target_xy"] = None
     mission.config.nav.stop_distance_m = action_state["normal_stop"]
     mission.start(query)
@@ -198,6 +214,9 @@ def run_demo(
     mujoco.mj_forward(model, data)
     placements = randomize_scene_objects(model, data, seed=seed)
     initialize_gripper(model, data)
+    can_joint = model.joint("target_can_red_free").id
+    can_qpos = int(model.jnt_qposadr[can_joint])
+    can_qvel = int(model.jnt_dofadr[can_joint])
 
     robot_state = initialize_robot_state(model, data)
     apply_robot_state(model, data, robot_state)  # pin robot at mount height
@@ -215,6 +234,10 @@ def run_demo(
     world_model = WorldModel()
     action_state = {
         "pick_up": False,
+        "put_down": None,
+        "held_can": False,
+        "can_home_qpos": data.qpos[can_qpos:can_qpos + 7].copy(),
+        "can_base_z": float(data.qpos[can_qpos + 2]),
         "target_xy": None,
         "normal_stop": cfg.nav.stop_distance_m,
     }
@@ -240,8 +263,26 @@ def run_demo(
                 if pending is not None and not _handle_command(pending, mission, world_model, action_state):
                     break
 
+                put_down = action_state["put_down"]
+                if put_down is not None:
+                    action_state["put_down"] = None
+                    placed = put_down_red_can(
+                        model, data, viewer, robot_state,
+                        action_state["can_home_qpos"], put_back=put_down == "back",
+                    )
+                    if placed is None:
+                        logger.info("PUT-DOWN FAILED: could not reach a placement spot; the can stays held. Move near the table or counter and retry.")
+                    else:
+                        surface, can_base_z = placed
+                        action_state["held_can"] = False
+                        action_state["can_base_z"] = can_base_z
+                        world_model.clear()
+                        logger.info("PUT-DOWN DONE: red can placed on the %s; arm retracted.", surface)
+
                 if mission.active:
                     result = mission.step(robot_state)
+                    if action_state["held_can"]:
+                        sync_held_red_can(model, data)
                     if result.target_xy is not None:
                         world_model.update(mission.query.label, result.target_xy)
                         action_state["target_xy"] = result.target_xy.copy()
@@ -254,7 +295,19 @@ def run_demo(
                             logger.info("PICKUP FAILED: no camera position available")
                         else:
                             logger.info("Red can reached; moving the arm to the camera position.")
-                            picked = pick_up_red_can(model, data, viewer, target_xy, robot_state)
+                            can_before = data.qpos[can_qpos:can_qpos + 7].copy()
+                            picked = pick_up_red_can(
+                                model, data, viewer, target_xy, robot_state,
+                                can_base_z=action_state["can_base_z"],
+                            )
+                            if picked:
+                                action_state["held_can"] = True
+                                sync_held_red_can(model, data)
+                            else:
+                                data.qpos[can_qpos:can_qpos + 7] = can_before
+                                data.qvel[can_qvel:can_qvel + 6] = 0.0
+                                mujoco.mj_forward(model, data)
+                                stow_right_arm(model, data, viewer, open_hand=True)
                             logger.info("PICKUP %s", "DONE" if picked else "FAILED: arm could not reach the can")
                         mission.config.nav.stop_distance_m = action_state["normal_stop"]
                     if overlay_on:
