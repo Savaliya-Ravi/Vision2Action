@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.0.0
+
+- Added a demonstration-adapted VLA policy that combines frozen Octo RGB and language features with a trained G1 action head.
+- Added collection, training, headless evaluation, and interactive MuJoCo commands under `python -m vision2action.vla.v4`.
+- Calibrated local end-effector actions for the G1 right arm and waist while keeping the floating base fixed at the known fridge pose.
+- Updated the fridge door and handle contacts and added convex fingertip contact pads so the articulated hand can pull the door through MuJoCo physics.
+- Bundled four successful demonstration episodes and their small trained action head. The learned policy opens the door to 30.90 degrees in 12 decisions in the reference evaluation.
+- Added physical-contact, dataset, action-head, and trial regression tests. The existing oracle perception and V2 object locations remain unchanged.
+
 ## 3.1.0
 
 - Kept the red can attached to the G1 hand during V2 navigation, including turns and approaches.

@@ -1,1 +1,1 @@
-"""V3: image and language conditioned G1 control."""
+"""V3 zero-shot and V4 demonstration-adapted vision-language-action control."""

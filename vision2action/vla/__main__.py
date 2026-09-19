@@ -27,7 +27,7 @@ from vision2action.vla.octo_policy import OctoPolicy
 ROOT = Path(__file__).resolve().parents[2]
 SCENE = ROOT / "vision2action" / "env" / "scene.xml"
 CHECKPOINT = ROOT / "checkpoints" / "octo-small-1.5"
-START_XY = (-3.0, 2.05)
+START_XY = (-3.0, 2.04)
 START_YAW = np.pi / 2
 DOOR_OPEN_DEG = 30.0
 # A fixed, near-handle initial posture makes V3 a local manipulation trial.

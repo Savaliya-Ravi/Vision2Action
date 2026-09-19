@@ -409,6 +409,9 @@
                                 actuatorfrcrange="-1.4 1.4"/>
                               <geom class="visual" mesh="right_hand_middle_1_link"/>
                               <geom class="collision" mesh="right_hand_middle_1_link"/>
+                              <!-- Convex fingertip pads make handle contact stable; the mesh remains visual. -->
+                              <geom name="right_middle_fingertip_pad" class="collision" type="sphere"
+                                pos="0.045 0 0" size="0.012" friction="2 0.02 0.002" rgba="0.2 0.2 0.2 1"/>
                             </body>
                           </body>
                           <body name="right_hand_index_0_link" pos="0.1192 -0.0046 0.0285">
@@ -426,6 +429,8 @@
                                 actuatorfrcrange="-1.4 1.4"/>
                               <geom class="visual" mesh="right_hand_index_1_link"/>
                               <geom class="collision" mesh="right_hand_index_1_link"/>
+                              <geom name="right_index_fingertip_pad" class="collision" type="sphere"
+                                pos="0.045 0 0" size="0.012" friction="2 0.02 0.002" rgba="0.2 0.2 0.2 1"/>
                             </body>
                           </body>
                         </body>

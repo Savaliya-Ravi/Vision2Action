@@ -23,7 +23,24 @@ JAX_PLATFORMS=cpu .venv-octo/bin/python scripts/test_octo_inference.py
 
 The downloaded checkpoint and the isolated environment are ignored by Git.
 
-V3 connects Octo to the Unitree G1 in a separate fridge-door trial. Its seven
-action values are converted to bounded right-hand motion and finger targets;
-the floating base is held at the fixed starting pose. See README.md for the
-command and the limits of this zero-shot trial.
+V3 connects unmodified Octo to the Unitree G1 in a separate zero-shot
+fridge-door trial. V4 adds a demonstration-trained G1 action head on Octo's
+RGB and language features. The floating base remains fixed in both versions.
+
+Run the trained V4 policy in the desktop viewer:
+
+```bash
+env -u MUJOCO_GL .venv-octo/bin/python -m vision2action.vla.v4 interactive
+```
+
+Then type `open the fridge door` in the same terminal. For a repeatable
+headless check:
+
+```bash
+MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  .venv-octo/bin/python -m vision2action.vla.v4 eval --decisions 40
+```
+
+The Octo Small base checkpoint remains local under `checkpoints/`. The small
+V4 action head and its reference demonstration dataset are included in the
+project.

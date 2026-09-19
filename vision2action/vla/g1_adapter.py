@@ -24,6 +24,12 @@ RIGHT_ARM = (
     "right_wrist_yaw_joint",
 )
 
+WAIST = (
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+)
+
 RIGHT_HAND_CLOSED = {
     "right_hand_thumb_0_joint": 0.0,
     "right_hand_thumb_1_joint": -0.8,
@@ -52,15 +58,23 @@ def _bounded_vector(values: np.ndarray, limit: float) -> np.ndarray:
 class G1ActionAdapter:
     """Interpret Octo's 7D output as a local SE(3) delta and gripper scalar."""
 
-    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, limits: AdapterLimits = AdapterLimits()):
+    def __init__(
+        self,
+        model: mujoco.MjModel,
+        data: mujoco.MjData,
+        limits: AdapterLimits = AdapterLimits(),
+        *,
+        control_waist: bool = False,
+    ):
         self.model = model
         self.data = data
         self.limits = limits
         self.site_id = model.site("right_grasp_site").id
         self.body_id = model.body("robot").id
         self.free_joint = model.joint("robot_free").id
-        self.arm_joint_ids = [model.joint(name).id for name in RIGHT_ARM]
-        self.arm_actuator_ids = [model.actuator(name).id for name in RIGHT_ARM]
+        self.control_joint_names = (WAIST + RIGHT_ARM) if control_waist else RIGHT_ARM
+        self.arm_joint_ids = [model.joint(name).id for name in self.control_joint_names]
+        self.arm_actuator_ids = [model.actuator(name).id for name in self.control_joint_names]
         self.arm_dof_ids = [int(model.jnt_dofadr[j]) for j in self.arm_joint_ids]
         self.hand_ids = [(model.joint(name).id, model.actuator(name).id, closed)
                          for name, closed in RIGHT_HAND_CLOSED.items()]
@@ -81,8 +95,8 @@ class G1ActionAdapter:
 
         translation = _bounded_vector(action[:3], self.limits.max_translation_m)
         rotation = _bounded_vector(action[3:6], self.limits.max_rotation_rad)
-        # V3 interprets Octo's spatial channels as robot-local deltas. This
-        # embodiment-frame assumption must be calibrated with G1 data in V4.
+        # Spatial channels are robot-local deltas. V4 demonstrations and the
+        # learned head are trained with this G1 embodiment mapping.
         base_rotation = self.data.xmat[self.body_id].reshape(3, 3)
         desired = np.concatenate((base_rotation @ translation, base_rotation @ rotation))
         jac_pos = np.zeros((3, self.model.nv))

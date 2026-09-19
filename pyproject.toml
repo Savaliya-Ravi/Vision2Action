@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "HumanoidVision2Action"
-version = "3.1.0"
+version = "4.0.0"
 description = "Language-directed humanoid navigation and manipulation in MuJoCo"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -33,6 +33,7 @@ vision2action = [
   "assets/**/*.png",
   "assets/**/LICENSE",
   "assets/**/UPSTREAM_README.md",
+  "vla/checkpoints/*.npz",
 ]
 
 [tool.pytest.ini_options]
