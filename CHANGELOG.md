@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.1.0
+
+- Trained a text-conditioned intent head on paired RGB observations so the same starting view can yield either the existing fridge-opening skill or a model-selected STOP.
+- Added held-out phrase checks and MuJoCo evaluations: `open the refrigerator door` opened to 30.90 degrees, while `leave the fridge door closed` stopped before arm motion.
+- Added `train-intent`, `eval --expect open|stop`, and regression coverage for the learned STOP path.
+- Kept the V4 action head, fixed start, and perception path. This is command selection for a single skill, not general task understanding or learned navigation.
+
 ## 4.0.0
 
 - Added a demonstration-adapted VLA policy that combines frozen Octo RGB and language features with a trained G1 action head.

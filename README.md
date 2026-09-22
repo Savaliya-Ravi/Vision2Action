@@ -10,6 +10,8 @@ localization, and navigation pipeline. V3 provides a zero-shot Octo baseline.
 V4 adapts Octo's RGB and language features to the G1 using demonstration data
 and opens the fridge door through physical hand contact. The existing oracle
 and hardcoded object locations are unchanged.
+V4.1 adds a learned text decision that can start that skill or stop without
+moving when the instruction asks to leave the door closed.
 
 ## What works
 
@@ -28,6 +30,8 @@ and hardcoded object locations are unchanged.
   `open the fridge door` at the fixed fridge start.
 - Physical fridge opening to 30.90 degrees in 12 learned policy decisions in
   the reference headless evaluation.
+- A learned V4.1 command choice: `open the refrigerator door` opens the door,
+  while `leave the fridge door closed` selects STOP before arm motion.
 
 ## Current limitations
 
@@ -47,6 +51,10 @@ and hardcoded object locations are unchanged.
 - V4 is trained for one scene, one fixed starting pose, and one instruction.
   Its bundled dataset contains four demonstrations from that same pose. It
   must be retrained for changed layouts, robot geometry, or broader commands.
+- V4.1 distinguishes a small set of opening and non-opening phrases at the
+  fixed starting view. It is not a general language planner; unfamiliar
+  commands may be classified incorrectly. The door action head still uses
+  the two motions learned from programmed demonstrations.
 - The V4 base is pinned while the learned policy controls the waist, right arm,
   and hand. Walking from a remote start remains V5 work.
 
@@ -144,7 +152,7 @@ The Octo test only verifies that a checkpoint loads and returns an action array:
 .venv-octo/bin/python scripts/test_octo_inference.py
 ```
 
-## V4: trained fridge-door policy
+## V4.1: text-conditioned fridge-door policy
 
 Run this from a desktop terminal to open MuJoCo and wait for a command:
 
@@ -156,10 +164,16 @@ When the window appears, type `open the fridge door` in the same terminal and
 press Enter. The first command loads Octo and can take a while. `stop` stops the
 current attempt, `reset` closes the door and restores the start pose, and
 `quit` exits. This is typed input; microphone speech is not wired up.
+You can also type `leave the fridge door closed`: the learned intent head then
+selects STOP before the robot moves. The existing interactive control word
+`stop` still cancels an active attempt.
+This V4.1 viewer is separate from `python -m vision2action.main`; the V2
+kitchen program does not use the V4.1 learned policy.
 
 The V4 runtime receives two RGB camera images and the text instruction. A
-frozen Octo encoder and the learned G1 action head produce every seven-value
-end-effector and gripper action. Numerical inverse kinematics and actuator
+frozen Octo encoder and a learned intent head decide whether to start the
+fridge-opening skill. If it starts, the learned G1 action head produces every
+seven-value end-effector and gripper action. Numerical inverse kinematics and actuator
 limits map those actions to the waist, right arm, and articulated fingers. No
 target location, scripted hand path, or direct door-joint command is used
 during evaluation or interactive operation. Door angle and physical contact
@@ -173,8 +187,17 @@ MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
   --decisions 40 --trace /tmp/vla_v4_trial.json
 ```
 
-The repository includes the 48-sample demonstration dataset and trained action
-head. To rebuild both and immediately validate the result:
+Check the stop decision with the same starting camera view:
+
+```bash
+MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  .venv-octo/bin/python -m vision2action.vla.v4 eval \
+  --instruction "leave the fridge door closed" --expect stop
+```
+
+The repository includes the 48-sample demonstration dataset, trained action
+head, and trained intent head. To rebuild all three and immediately validate
+the opening result:
 
 ```bash
 MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
@@ -184,7 +207,8 @@ MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
 
 The standard imitation-learning split is explicit: `collect` creates successful
 physics demonstrations, `train` fits the action head on frozen Octo features,
-and `eval` or `interactive` runs only the learned policy. Use
+`train-intent` fits the open/stop decision on paired images and contrasting
+instructions, and `eval` or `interactive` runs only the learned policy. Use
 `python -m vision2action.vla.v4 --help` to see the individual commands.
 
 ## V3: VLA fridge-door trial
@@ -260,7 +284,8 @@ tests/                       fast unit tests
 | --- | --- | --- |
 | V3 | Closed-loop zero-shot Octo control of the G1 right arm and hand from RGB and text at a fixed fridge start. | Model actions reach G1 actuators; trial reports door angle and success honestly. |
 | V3.1 | Repair the V2 interactive carry and placement lifecycle and validate it in MuJoCo. | Pickup, navigation while carrying, and explicit placement keep the can in the intended state. |
-| V4 (current) | Collect G1 fridge-opening demonstrations, calibrate the action frame, and adapt Octo to this scene. | The trained policy opens the door past 30 degrees through physical contact; the reference run reaches 30.90 degrees in 12 decisions. |
+| V4 | Collect G1 fridge-opening demonstrations, calibrate the action frame, and adapt Octo to this scene. | The trained policy opens the door past 30 degrees through physical contact; the reference run reaches 30.90 degrees in 12 decisions. |
+| V4.1 (current) | Learn whether text requests the fridge-opening skill or a stop, using the same camera view for contrasting instructions. | Open commands run the physical skill; leave-closed commands stop before motion. |
 | V5 | Add learned G1 base/navigation actions and train the combined command “go to the fridge and open the door.” | From a remote start, held-out trials reach the fridge and open it without scripted navigation or manipulation. |
 
 The existing hardcoded/oracle location path can remain as a separate V2

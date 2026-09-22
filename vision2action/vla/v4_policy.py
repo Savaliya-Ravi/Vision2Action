@@ -12,6 +12,47 @@ from vision2action.vla.octo_policy import OctoPolicy
 FEATURE_DIM = 384
 ACTION_DIM = 7
 HEAD_FORMAT_VERSION = 2
+INTENT_FORMAT_VERSION = 1
+DEFAULT_INTENT_HEAD = Path(__file__).resolve().parent / "checkpoints" / "v4_1_intent_head.npz"
+
+
+class LearnedIntentHead:
+    """Choose whether a command requests the trained fridge-opening skill."""
+
+    def __init__(self, checkpoint: Path = DEFAULT_INTENT_HEAD):
+        checkpoint = Path(checkpoint)
+        if not checkpoint.is_file():
+            raise FileNotFoundError(
+                f"V4.1 intent head missing: {checkpoint}. Run the V4 train-intent command first."
+            )
+        with np.load(checkpoint, allow_pickle=False) as saved:
+            if int(saved["format_version"]) != INTENT_FORMAT_VERSION:
+                raise ValueError("Unsupported V4.1 intent-head format")
+            self.weights = np.asarray(saved["weights"], dtype=np.float32)
+            self.bias = float(saved["bias"])
+            self.feature_mean = np.asarray(saved["feature_mean"], dtype=np.float32)
+            self.feature_std = np.asarray(saved["feature_std"], dtype=np.float32)
+            self.threshold = float(saved["threshold"])
+        if any(array.shape != (FEATURE_DIM,) for array in (
+            self.weights, self.feature_mean, self.feature_std
+        )):
+            raise ValueError("V4.1 intent head expects one weight per Octo feature")
+        if not all(np.all(np.isfinite(array)) for array in (
+            self.weights, self.feature_mean, self.feature_std
+        )) or not np.isfinite([self.bias, self.threshold]).all():
+            raise ValueError("V4.1 intent head contains non-finite values")
+        if np.any(self.feature_std <= 0):
+            raise ValueError("V4.1 feature standard deviations must be positive")
+
+    def score(self, feature: np.ndarray) -> float:
+        feature = np.asarray(feature, dtype=np.float32)
+        if feature.shape != (FEATURE_DIM,) or not np.all(np.isfinite(feature)):
+            raise ValueError(f"Expected one finite {FEATURE_DIM}-value Octo feature")
+        normalized = (feature - self.feature_mean) / self.feature_std
+        return float(normalized @ self.weights + self.bias)
+
+    def requests_opening(self, feature: np.ndarray) -> bool:
+        return self.score(feature) >= self.threshold
 
 
 class LearnedActionHead:
@@ -71,15 +112,29 @@ class LearnedActionHead:
 
 
 class V4Policy:
-    """VLA policy whose RGB/text features and learned head produce every action."""
+    """Octo features drive learned task selection and G1 actions."""
 
-    def __init__(self, octo_checkpoint: Path, action_head: Path, instruction: str):
+    def __init__(
+        self,
+        octo_checkpoint: Path,
+        action_head: Path,
+        instruction: str,
+        intent_head: Path = DEFAULT_INTENT_HEAD,
+    ):
         self.encoder = OctoPolicy(octo_checkpoint, instruction)
         self.head = LearnedActionHead(action_head)
+        self.intent = LearnedIntentHead(intent_head)
         self.devices = self.encoder.devices
+        self._opening: bool | None = None
 
     def set_instruction(self, instruction: str) -> None:
         self.encoder.set_instruction(instruction)
+        self._opening = None
 
-    def predict(self, primary: np.ndarray, wrist: np.ndarray) -> np.ndarray:
-        return self.head.predict(self.encoder.encode(primary, wrist))
+    def predict(self, primary: np.ndarray, wrist: np.ndarray) -> np.ndarray | None:
+        feature = self.encoder.encode(primary, wrist)
+        if self._opening is None:
+            self._opening = self.intent.requests_opening(feature)
+        if not self._opening:
+            return None
+        return self.head.predict(feature)

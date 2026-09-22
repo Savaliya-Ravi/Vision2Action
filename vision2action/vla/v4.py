@@ -31,15 +31,14 @@ from vision2action.vla.__main__ import (
 )
 from vision2action.vla.g1_adapter import (
     G1ActionAdapter,
-    RIGHT_ARM,
-    WAIST,
     hold_current_joint_positions,
 )
 from vision2action.vla.octo_policy import OctoPolicy
 from vision2action.vla.v4_policy import (
     ACTION_DIM,
-    FEATURE_DIM,
+    DEFAULT_INTENT_HEAD,
     HEAD_FORMAT_VERSION,
+    INTENT_FORMAT_VERSION,
     V4Policy,
 )
 
@@ -47,8 +46,26 @@ from vision2action.vla.v4_policy import (
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET = ROOT / "data" / "v4_fridge_demonstrations.npz"
 DEFAULT_ACTION_HEAD = ROOT / "vision2action" / "vla" / "checkpoints" / "v4_g1_fridge_action_head.npz"
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 INSTRUCTION = "open the fridge door"
+INTENT_TRAIN_PHRASES = (
+    ("open the fridge door", 1),
+    ("please open the fridge door", 1),
+    ("open fridge door", 1),
+    ("pull open the fridge door", 1),
+    ("leave the fridge door closed", 0),
+    ("do not open the fridge door", 0),
+    ("wait beside the fridge", 0),
+    ("do not touch the fridge", 0),
+    ("close the fridge door", 0),
+)
+INTENT_HOLDOUT_PHRASES = (
+    ("open the refrigerator door", 1),
+    ("could you open the fridge", 1),
+    ("keep the fridge closed", 0),
+    ("leave it closed", 0),
+    ("pick up the red can", 0),
+)
 V4_START_XY = (-3.0, 1.8)
 V4_START_YAW = np.pi / 2
 V4_START_JOINTS = {
@@ -322,6 +339,74 @@ def train_action_head(
     return result
 
 
+def train_intent_head(
+    dataset_path: Path = DEFAULT_DATASET,
+    output: Path = DEFAULT_INTENT_HEAD,
+    octo_checkpoint: Path = OCTO_CHECKPOINT,
+    ridge: float = 1.0,
+) -> dict:
+    """Learn a text-conditioned open/stop decision from paired RGB observations.
+
+    Every phrase is encoded against the same initial camera images, so the
+    supervision cannot be solved by the visual state alone. This is still a
+    narrow command set, not a general language planner.
+    """
+    if ridge <= 0:
+        raise ValueError("ridge must be positive")
+    dataset = _load_dataset(dataset_path)
+    primary, wrist = dataset["primary"][0], dataset["wrist"][0]
+    encoder = OctoPolicy(octo_checkpoint, INTENT_TRAIN_PHRASES[0][0])
+    features = []
+    for phrase, _ in INTENT_TRAIN_PHRASES + INTENT_HOLDOUT_PHRASES:
+        encoder.set_instruction(phrase)
+        features.append(encoder.encode(primary, wrist))
+        print(f"encoded intent: {phrase}", flush=True)
+    features = np.asarray(features, dtype=np.float64)
+    train_count = len(INTENT_TRAIN_PHRASES)
+    targets = np.asarray([label for _, label in INTENT_TRAIN_PHRASES], dtype=np.float64)
+    train_features = features[:train_count]
+    feature_mean = train_features.mean(axis=0)
+    feature_std = np.maximum(train_features.std(axis=0), 1e-3)
+    normalized = (train_features - feature_mean) / feature_std
+    gram = normalized @ normalized.T + ridge * np.eye(train_count)
+    weights = normalized.T @ np.linalg.solve(gram, targets - targets.mean())
+    bias = float(targets.mean())
+    scores = ((features - feature_mean) / feature_std) @ weights + bias
+    labels = np.asarray([label for _, label in INTENT_TRAIN_PHRASES + INTENT_HOLDOUT_PHRASES])
+    predictions = scores >= 0.5
+
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        format_version=np.array(INTENT_FORMAT_VERSION, dtype=np.int64),
+        weights=weights.astype(np.float32),
+        bias=np.array(bias, dtype=np.float32),
+        feature_mean=feature_mean.astype(np.float32),
+        feature_std=feature_std.astype(np.float32),
+        threshold=np.array(0.5, dtype=np.float32),
+        train_phrases=np.asarray([phrase for phrase, _ in INTENT_TRAIN_PHRASES]),
+        train_labels=targets.astype(np.int8),
+        holdout_phrases=np.asarray([phrase for phrase, _ in INTENT_HOLDOUT_PHRASES]),
+        holdout_labels=labels[train_count:].astype(np.int8),
+        holdout_scores=scores[train_count:].astype(np.float32),
+    )
+    result = {
+        "version": VERSION,
+        "path": str(output),
+        "train_accuracy": float(np.mean(predictions[:train_count] == labels[:train_count])),
+        "held_out_phrase_accuracy": float(np.mean(predictions[train_count:] == labels[train_count:])),
+        "held_out_phrases": [
+            {"instruction": phrase, "score": float(score), "requests_opening": bool(prediction)}
+            for (phrase, _), score, prediction in zip(
+                INTENT_HOLDOUT_PHRASES, scores[train_count:], predictions[train_count:]
+            )
+        ],
+    }
+    print(json.dumps(result, indent=2))
+    return result
+
+
 def run_v4_trial(
     instruction: str = INSTRUCTION,
     decisions: int = 80,
@@ -330,10 +415,13 @@ def run_v4_trial(
     viewer_enabled: bool = False,
     trace_path: Path | None = None,
     policy_factory: Callable[[Path, Path, str], object] = V4Policy,
+    expected_outcome: str = "open",
 ) -> dict:
     """Evaluate only model-produced actions against contact and door angle."""
     if decisions < 1:
         raise ValueError("decisions must be positive")
+    if expected_outcome not in {"open", "stop"}:
+        raise ValueError("expected_outcome must be 'open' or 'stop'")
     if viewer_enabled:
         _require_desktop_viewer()
     policy = policy_factory(octo_checkpoint, action_head, instruction)
@@ -342,6 +430,7 @@ def run_v4_trial(
     wrist_renderer = mujoco.Renderer(model, height=128, width=128)
     records = []
     contact_steps = 0
+    policy_stopped = False
     viewer = None
 
     def on_step() -> None:
@@ -361,7 +450,12 @@ def run_v4_trial(
                 break
             primary = _camera_rgb(primary_renderer, data, "vla_fridge_cam")
             wrist = _camera_rgb(wrist_renderer, data, "vla_wrist_cam")
-            action = np.asarray(policy.predict(primary, wrist), dtype=float)
+            prediction = policy.predict(primary, wrist)
+            if prediction is None:
+                policy_stopped = True
+                print("policy selected STOP", flush=True)
+                break
+            action = np.asarray(prediction, dtype=float)
             adapter.apply(action, on_step=on_step)
             door_deg = float(np.rad2deg(data.qpos[hinge_q]))
             records.append({"decision": index + 1, "action": action.tolist(), "door_deg": door_deg})
@@ -379,9 +473,10 @@ def run_v4_trial(
     door_deg = float(np.rad2deg(data.qpos[hinge_q]))
     result = {
         "version": VERSION,
-        "policy": "octo_frozen_encoder_learned_g1_action_head",
+        "policy": "octo_frozen_encoder_learned_intent_and_g1_action_heads",
         "model": str(octo_checkpoint),
         "action_head": str(action_head),
+        "intent_head": str(DEFAULT_INTENT_HEAD),
         "devices": list(policy.devices),
         "instruction": instruction,
         "success_threshold_deg": DOOR_OPEN_DEG,
@@ -389,7 +484,14 @@ def run_v4_trial(
         "decisions": len(records),
         "door_deg": door_deg,
         "contact_steps": contact_steps,
+        "policy_stopped": policy_stopped,
         "opened": bool(door_deg >= DOOR_OPEN_DEG and contact_steps > 0),
+        "expected_outcome": expected_outcome,
+        "goal_satisfied": bool(
+            (door_deg >= DOOR_OPEN_DEG and contact_steps > 0)
+            if expected_outcome == "open"
+            else (policy_stopped and abs(door_deg) < 1.0)
+        ),
         "actions": records,
     }
     if trace_path is not None:
@@ -483,6 +585,16 @@ def run_interactive_v4(
             primary = _camera_rgb(primary_renderer, data, "vla_fridge_cam")
             wrist = _camera_rgb(wrist_renderer, data, "vla_wrist_cam")
             action = policy.predict(primary, wrist)
+            if action is None:
+                active.update(
+                    outcome="policy_stopped",
+                    door_deg=float(np.rad2deg(data.qpos[hinge_q])),
+                    contact_steps=contact_steps,
+                )
+                print("Policy selected STOP; waiting for another command.", flush=True)
+                sessions.append(active)
+                active = None
+                continue
             adapter.apply(action, on_step=on_step)
             door_deg = float(np.rad2deg(data.qpos[hinge_q]))
             count = len(active["actions"]) + 1
@@ -515,7 +627,7 @@ def run_interactive_v4(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="V4: demonstration-adapted Octo policy for the G1 fridge")
+    parser = argparse.ArgumentParser(description="V4.1: text-conditioned Octo policy for the G1 fridge")
     sub = parser.add_subparsers(dest="command", required=True)
 
     collect = sub.add_parser("collect", help="collect successful MuJoCo demonstrations")
@@ -530,6 +642,12 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--checkpoint", type=Path, default=OCTO_CHECKPOINT)
     train.add_argument("--ridge", type=float, default=1e-3)
 
+    train_intent = sub.add_parser("train-intent", help="train text-conditioned opening or stopping")
+    train_intent.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    train_intent.add_argument("--output", type=Path, default=DEFAULT_INTENT_HEAD)
+    train_intent.add_argument("--checkpoint", type=Path, default=OCTO_CHECKPOINT)
+    train_intent.add_argument("--ridge", type=float, default=1.0)
+
     evaluate = sub.add_parser("eval", help="run a headless or desktop V4 evaluation")
     evaluate.add_argument("--instruction", default=INSTRUCTION)
     evaluate.add_argument("--decisions", type=int, default=80)
@@ -537,6 +655,7 @@ def _build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--action-head", type=Path, default=DEFAULT_ACTION_HEAD)
     evaluate.add_argument("--viewer", action="store_true")
     evaluate.add_argument("--trace", type=Path)
+    evaluate.add_argument("--expect", choices=("open", "stop"), default="open")
 
     interactive = sub.add_parser("interactive", help="open MuJoCo and wait for typed commands")
     interactive.add_argument("--decisions", type=int, default=80)
@@ -544,7 +663,7 @@ def _build_parser() -> argparse.ArgumentParser:
     interactive.add_argument("--action-head", type=Path, default=DEFAULT_ACTION_HEAD)
     interactive.add_argument("--trace", type=Path)
 
-    bootstrap = sub.add_parser("bootstrap", help="collect, train, and evaluate V4")
+    bootstrap = sub.add_parser("bootstrap", help="collect, train both heads, and evaluate V4.1")
     bootstrap.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     bootstrap.add_argument("--action-head", type=Path, default=DEFAULT_ACTION_HEAD)
     bootstrap.add_argument("--checkpoint", type=Path, default=OCTO_CHECKPOINT)
@@ -562,24 +681,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "train":
         train_action_head(args.dataset, args.output, args.checkpoint, args.ridge)
         return 0
+    if args.command == "train-intent":
+        train_intent_head(args.dataset, args.output, args.checkpoint, args.ridge)
+        return 0
     if args.command == "eval":
         result = run_v4_trial(
             args.instruction, args.decisions, args.checkpoint, args.action_head,
-            args.viewer, args.trace,
+            args.viewer, args.trace, expected_outcome=args.expect,
         )
         print(json.dumps({key: value for key, value in result.items() if key != "actions"}, indent=2))
-        return 0 if result["opened"] else 1
+        return 0 if result["goal_satisfied"] else 1
     if args.command == "interactive":
         run_interactive_v4(args.decisions, args.checkpoint, args.action_head, args.trace)
         return 0
 
     collect_demonstrations(args.dataset, args.episodes, args.decisions, INSTRUCTION)
     train_action_head(args.dataset, args.action_head, args.checkpoint)
+    train_intent_head(args.dataset, DEFAULT_INTENT_HEAD, args.checkpoint)
     result = run_v4_trial(
         INSTRUCTION, args.decisions, args.checkpoint, args.action_head, False, args.trace
     )
     print(json.dumps({key: value for key, value in result.items() if key != "actions"}, indent=2))
-    return 0 if result["opened"] else 1
+    return 0 if result["goal_satisfied"] else 1
 
 
 if __name__ == "__main__":

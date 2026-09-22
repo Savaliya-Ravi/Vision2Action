@@ -57,6 +57,7 @@ third_party/octo/
 # Keep the small trained V4 action head; downloaded base checkpoints stay local.
 !vision2action/vla/checkpoints/
 !vision2action/vla/checkpoints/v4_g1_fridge_action_head.npz
+!vision2action/vla/checkpoints/v4_1_intent_head.npz
 
 # Local runtime files
 *.sqlite3

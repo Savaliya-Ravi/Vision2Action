@@ -12,7 +12,12 @@ from vision2action.vla.v4 import (
     initialize_v4_trial,
     run_v4_trial,
 )
-from vision2action.vla.v4_policy import ACTION_DIM, FEATURE_DIM, LearnedActionHead
+from vision2action.vla.v4_policy import (
+    ACTION_DIM,
+    FEATURE_DIM,
+    LearnedActionHead,
+    LearnedIntentHead,
+)
 
 
 def make_trial():
@@ -116,3 +121,60 @@ def test_v4_runner_measures_contact_for_policy_actions(monkeypatch):
     assert result["opened"]
     assert result["contact_steps"] > 0
     assert result["door_deg"] >= 30.0
+
+
+def test_v4_intent_head_selects_between_two_feature_vectors(tmp_path: Path):
+    checkpoint = tmp_path / "intent.npz"
+    weights = np.zeros(FEATURE_DIM, dtype=np.float32)
+    weights[0] = 1.0
+    np.savez_compressed(
+        checkpoint,
+        format_version=np.array(1),
+        weights=weights,
+        bias=np.array(0.0),
+        feature_mean=np.zeros(FEATURE_DIM, dtype=np.float32),
+        feature_std=np.ones(FEATURE_DIM, dtype=np.float32),
+        threshold=np.array(0.5),
+    )
+    intent = LearnedIntentHead(checkpoint)
+    open_feature = np.zeros(FEATURE_DIM, dtype=np.float32)
+    open_feature[0] = 0.8
+    assert intent.requests_opening(open_feature)
+    assert not intent.requests_opening(np.zeros(FEATURE_DIM, dtype=np.float32))
+
+
+def test_v4_runner_honors_model_stop_without_moving_the_door(monkeypatch):
+    class FakeRenderer:
+        def __init__(self, model, height, width):
+            self.shape = (height, width, 3)
+
+        def update_scene(self, data, camera):
+            pass
+
+        def render(self):
+            return np.zeros(self.shape, dtype=np.uint8)
+
+        def close(self):
+            pass
+
+    class StopPolicy:
+        devices = ["fake"]
+
+        def __init__(self, octo_checkpoint, action_head, instruction):
+            pass
+
+        def predict(self, primary, wrist):
+            return None
+
+    monkeypatch.setattr(mujoco, "Renderer", FakeRenderer)
+    result = run_v4_trial(
+        instruction="leave the fridge door closed",
+        expected_outcome="stop",
+        policy_factory=StopPolicy,
+    )
+
+    assert result["goal_satisfied"]
+    assert result["policy_stopped"]
+    assert result["decisions"] == 0
+    assert result["door_deg"] == 0.0
+    assert result["contact_steps"] == 0
