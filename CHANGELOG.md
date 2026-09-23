@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.2.0
+
+- Added a visual completion head trained on stateless Octo features from a physical fridge-opening trajectory.
+- Removed the hidden MuJoCo door-angle stop from evaluation and interactive control. The learned policy now stops after the camera view is classified as task-complete; door angle remains evaluation output only.
+- Verified the complete model loop: 12 actions opened the door to 30.90 degrees, followed by a model-selected `task_complete` stop.
+- Held out three trajectory frames during completion training: 27.72 degrees was classified incomplete, while 34.08 and 40.16 degrees were classified complete.
+- Preserved V4.1 text behavior: `leave the fridge door closed` selects `intent_stop` at 0 degrees before any action.
+
 ## 4.1.0
 
 - Trained a text-conditioned intent head on paired RGB observations so the same starting view can yield either the existing fridge-opening skill or a model-selected STOP.

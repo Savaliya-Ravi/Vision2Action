@@ -58,6 +58,7 @@ third_party/octo/
 !vision2action/vla/checkpoints/
 !vision2action/vla/checkpoints/v4_g1_fridge_action_head.npz
 !vision2action/vla/checkpoints/v4_1_intent_head.npz
+!vision2action/vla/checkpoints/v4_2_completion_head.npz
 
 # Local runtime files
 *.sqlite3

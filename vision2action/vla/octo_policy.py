@@ -80,6 +80,21 @@ class OctoPolicy:
             raise ValueError("Octo returned an invalid action-readout feature")
         return feature
 
+    def encode_stateless(self, primary: np.ndarray, wrist: np.ndarray) -> np.ndarray:
+        """Encode one observation without changing the action-history state."""
+        primary_history = self.primary_history
+        wrist_history = self.wrist_history
+        decision = self.decision
+        try:
+            self.primary_history = []
+            self.wrist_history = []
+            self.decision = 0
+            return self.encode(primary, wrist)
+        finally:
+            self.primary_history = primary_history
+            self.wrist_history = wrist_history
+            self.decision = decision
+
     def predict(self, primary: np.ndarray, wrist: np.ndarray) -> np.ndarray:
         observation = self._observation(primary, wrist)
         actions = self.model.sample_actions(

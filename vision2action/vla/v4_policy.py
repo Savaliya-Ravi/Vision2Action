@@ -14,6 +14,48 @@ ACTION_DIM = 7
 HEAD_FORMAT_VERSION = 2
 INTENT_FORMAT_VERSION = 1
 DEFAULT_INTENT_HEAD = Path(__file__).resolve().parent / "checkpoints" / "v4_1_intent_head.npz"
+COMPLETION_FORMAT_VERSION = 1
+DEFAULT_COMPLETION_HEAD = Path(__file__).resolve().parent / "checkpoints" / "v4_2_completion_head.npz"
+
+
+class LearnedCompletionHead:
+    """Recognize from Octo image features when the fridge-opening task is done."""
+
+    def __init__(self, checkpoint: Path = DEFAULT_COMPLETION_HEAD):
+        checkpoint = Path(checkpoint)
+        if not checkpoint.is_file():
+            raise FileNotFoundError(
+                f"V4.2 completion head missing: {checkpoint}. "
+                "Run the V4 train-completion command first."
+            )
+        with np.load(checkpoint, allow_pickle=False) as saved:
+            if int(saved["format_version"]) != COMPLETION_FORMAT_VERSION:
+                raise ValueError("Unsupported V4.2 completion-head format")
+            self.weights = np.asarray(saved["weights"], dtype=np.float32)
+            self.bias = float(saved["bias"])
+            self.feature_mean = np.asarray(saved["feature_mean"], dtype=np.float32)
+            self.feature_std = np.asarray(saved["feature_std"], dtype=np.float32)
+            self.threshold = float(saved["threshold"])
+        if any(array.shape != (FEATURE_DIM,) for array in (
+            self.weights, self.feature_mean, self.feature_std
+        )):
+            raise ValueError("V4.2 completion head expects one weight per Octo feature")
+        if not all(np.all(np.isfinite(array)) for array in (
+            self.weights, self.feature_mean, self.feature_std
+        )) or not np.isfinite([self.bias, self.threshold]).all():
+            raise ValueError("V4.2 completion head contains non-finite values")
+        if np.any(self.feature_std <= 0):
+            raise ValueError("V4.2 feature standard deviations must be positive")
+
+    def score(self, feature: np.ndarray) -> float:
+        feature = np.asarray(feature, dtype=np.float32)
+        if feature.shape != (FEATURE_DIM,) or not np.all(np.isfinite(feature)):
+            raise ValueError(f"Expected one finite {FEATURE_DIM}-value Octo feature")
+        normalized = (feature - self.feature_mean) / self.feature_std
+        return float(normalized @ self.weights + self.bias)
+
+    def is_complete(self, feature: np.ndarray) -> bool:
+        return self.score(feature) >= self.threshold
 
 
 class LearnedIntentHead:
@@ -120,21 +162,30 @@ class V4Policy:
         action_head: Path,
         instruction: str,
         intent_head: Path = DEFAULT_INTENT_HEAD,
+        completion_head: Path = DEFAULT_COMPLETION_HEAD,
     ):
         self.encoder = OctoPolicy(octo_checkpoint, instruction)
         self.head = LearnedActionHead(action_head)
         self.intent = LearnedIntentHead(intent_head)
+        self.completion = LearnedCompletionHead(completion_head)
         self.devices = self.encoder.devices
         self._opening: bool | None = None
+        self.stop_reason: str | None = None
 
     def set_instruction(self, instruction: str) -> None:
         self.encoder.set_instruction(instruction)
         self._opening = None
+        self.stop_reason = None
 
     def predict(self, primary: np.ndarray, wrist: np.ndarray) -> np.ndarray | None:
-        feature = self.encoder.encode(primary, wrist)
+        visual_feature = self.encoder.encode_stateless(primary, wrist)
         if self._opening is None:
-            self._opening = self.intent.requests_opening(feature)
+            self._opening = self.intent.requests_opening(visual_feature)
         if not self._opening:
+            self.stop_reason = "intent_stop"
             return None
-        return self.head.predict(feature)
+        if self.completion.is_complete(visual_feature):
+            self.stop_reason = "task_complete"
+            return None
+        self.stop_reason = None
+        return self.head.predict(self.encoder.encode(primary, wrist))

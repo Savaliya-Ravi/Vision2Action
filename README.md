@@ -12,6 +12,8 @@ and opens the fridge door through physical hand contact. The existing oracle
 and hardcoded object locations are unchanged.
 V4.1 adds a learned text decision that can start that skill or stop without
 moving when the instruction asks to leave the door closed.
+V4.2 adds learned visual task completion, so the camera view tells the policy
+when to stop pulling instead of a hidden MuJoCo door angle.
 
 ## What works
 
@@ -32,6 +34,8 @@ moving when the instruction asks to leave the door closed.
   the reference headless evaluation.
 - A learned V4.1 command choice: `open the refrigerator door` opens the door,
   while `leave the fridge door closed` selects STOP before arm motion.
+- Learned V4.2 completion detection: after 12 actions, the policy sees the open
+  door and stops at 30.90 degrees.
 
 ## Current limitations
 
@@ -55,6 +59,9 @@ moving when the instruction asks to leave the door closed.
   fixed starting view. It is not a general language planner; unfamiliar
   commands may be classified incorrectly. The door action head still uses
   the two motions learned from programmed demonstrations.
+- V4.2 completion training uses frames from one physical opening trajectory.
+  It removes the runtime door-angle shortcut, but it is not evidence of broad
+  visual generalization to different fridges, lighting, or starting poses.
 - The V4 base is pinned while the learned policy controls the waist, right arm,
   and hand. Walking from a remote start remains V5 work.
 
@@ -152,7 +159,7 @@ The Octo test only verifies that a checkpoint loads and returns an action array:
 .venv-octo/bin/python scripts/test_octo_inference.py
 ```
 
-## V4.1: text-conditioned fridge-door policy
+## V4.2: text-conditioned policy with visual completion
 
 Run this from a desktop terminal to open MuJoCo and wait for a command:
 
@@ -167,17 +174,19 @@ current attempt, `reset` closes the door and restores the start pose, and
 You can also type `leave the fridge door closed`: the learned intent head then
 selects STOP before the robot moves. The existing interactive control word
 `stop` still cancels an active attempt.
-This V4.1 viewer is separate from `python -m vision2action.main`; the V2
-kitchen program does not use the V4.1 learned policy.
+This V4.2 viewer is separate from `python -m vision2action.main`; the V2
+kitchen program does not use the V4.2 learned policy.
 
 The V4 runtime receives two RGB camera images and the text instruction. A
 frozen Octo encoder and a learned intent head decide whether to start the
 fridge-opening skill. If it starts, the learned G1 action head produces every
-seven-value end-effector and gripper action. Numerical inverse kinematics and actuator
-limits map those actions to the waist, right arm, and articulated fingers. No
+seven-value end-effector and gripper action. A learned completion head checks
+the current images and stops the skill after it sees the open door. Numerical
+inverse kinematics and actuator limits map those actions to the waist, right
+arm, and articulated fingers. No
 target location, scripted hand path, or direct door-joint command is used
 during evaluation or interactive operation. Door angle and physical contact
-are read only to measure success and stop after 30 degrees.
+are read only after the policy stops to measure whether the run succeeded.
 
 Run the same policy headlessly and save the full trace:
 
@@ -196,8 +205,8 @@ MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
 ```
 
 The repository includes the 48-sample demonstration dataset, trained action
-head, and trained intent head. To rebuild all three and immediately validate
-the opening result:
+head, trained intent head, and trained completion head. To rebuild them and
+immediately validate the opening result:
 
 ```bash
 MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
@@ -208,7 +217,8 @@ MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
 The standard imitation-learning split is explicit: `collect` creates successful
 physics demonstrations, `train` fits the action head on frozen Octo features,
 `train-intent` fits the open/stop decision on paired images and contrasting
-instructions, and `eval` or `interactive` runs only the learned policy. Use
+instructions, `train-completion` learns the finished state from RGB trajectory
+frames, and `eval` or `interactive` runs only the learned policy. Use
 `python -m vision2action.vla.v4 --help` to see the individual commands.
 
 ## V3: VLA fridge-door trial
@@ -285,7 +295,8 @@ tests/                       fast unit tests
 | V3 | Closed-loop zero-shot Octo control of the G1 right arm and hand from RGB and text at a fixed fridge start. | Model actions reach G1 actuators; trial reports door angle and success honestly. |
 | V3.1 | Repair the V2 interactive carry and placement lifecycle and validate it in MuJoCo. | Pickup, navigation while carrying, and explicit placement keep the can in the intended state. |
 | V4 | Collect G1 fridge-opening demonstrations, calibrate the action frame, and adapt Octo to this scene. | The trained policy opens the door past 30 degrees through physical contact; the reference run reaches 30.90 degrees in 12 decisions. |
-| V4.1 (current) | Learn whether text requests the fridge-opening skill or a stop, using the same camera view for contrasting instructions. | Open commands run the physical skill; leave-closed commands stop before motion. |
+| V4.1 | Learn whether text requests the fridge-opening skill or a stop, using the same camera view for contrasting instructions. | Open commands run the physical skill; leave-closed commands stop before motion. |
+| V4.2 (current) | Learn from RGB when the fridge-opening skill has finished and remove the hidden door-angle stop from runtime control. | The policy opens to 30.90 degrees and then returns `task_complete` from the camera view. |
 | V5 | Add learned G1 base/navigation actions and train the combined command “go to the fridge and open the door.” | From a remote start, held-out trials reach the fridge and open it without scripted navigation or manipulation. |
 
 The existing hardcoded/oracle location path can remain as a separate V2

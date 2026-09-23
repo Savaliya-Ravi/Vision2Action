@@ -26,7 +26,8 @@ The downloaded checkpoint and the isolated environment are ignored by Git.
 V3 connects unmodified Octo to the Unitree G1 in a separate zero-shot
 fridge-door trial. V4 adds a demonstration-trained G1 action head on Octo's
 RGB and language features. V4.1 adds a learned open/stop command choice. The
-floating base remains fixed in all versions.
+V4.2 uses Octo image features to recognize task completion without reading the
+door angle for runtime control. The floating base remains fixed in all versions.
 
 Run the trained V4 policy in the desktop viewer:
 
@@ -44,5 +45,5 @@ MUJOCO_GL=egl XLA_PYTHON_CLIENT_PREALLOCATE=false \
 ```
 
 The Octo Small base checkpoint remains local under `checkpoints/`. The small
-V4 action head, V4.1 intent head, and reference demonstration dataset are
-included in the project.
+V4 action head, V4.1 intent head, V4.2 completion head, and reference
+demonstration dataset are included in the project.
